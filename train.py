@@ -43,7 +43,10 @@ def pixel_validate(model, loss_func, X, y: torch.Tensor):
     accuracy = 0
     for i in range(0, len(y)):
       predicted_class = pred[i]
-      accuracy += torch.sum(torch.where(y[i] == predicted_class, 1, 0)) / (y.size(2) * y.size(3))
+      accuracy += torch.divide(
+         torch.sum(torch.where(y[i] == predicted_class, 1, 0)).type(torch.FloatTensor).to(device), 
+         y.size(2) * y.size(3)
+         )
 
     return loss_.item(), accuracy, len(X)
 
@@ -56,7 +59,7 @@ def evaluate(model: torch.nn.Module, loss_func, loader):
         i = 0
         for batch in loader:
           i += 1
-          for X, y, _ in batch:
+          for X, y in batch:
             validated_batches.append(patch_validate(model, loss_func, X, y))
           print("evaluate ", i)
 
@@ -74,13 +77,14 @@ def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patienc
     wait = 0
     valid_loss_min = np.Inf
 
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm.tqdm(range(epochs)):
 
         model.train()
 
         losses = []
-        for batch in train_loader:
-          for X, y, _ in batch:
+      
+        for batch in tqdm.tqdm(train_loader):
+          for X, y in batch:
             losses.append(patch_loss(model, loss_func, X, y, optimizer))
 
         losses, nums = zip(*losses)
@@ -91,9 +95,11 @@ def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patienc
         with torch.no_grad():
 
             losses = []
-            for batch in valid_loader:
-              for X, y, _ in batch:
+            for batch in tqdm.tqdm(valid_loader):
+              for X, y in batch:
                 losses.append(pixel_validate(model, loss_func, X, y))
+
+            torch.save(model.state_dict(), 'model.pt')
 
             losses, corrects, nums = zip(*losses)
             valid_loss = sum(np.multiply(losses, nums)) / sum(nums)
@@ -106,7 +112,7 @@ def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patienc
             # Save model if validation loss has decreased
             if valid_loss <= valid_loss_min:
                 print(f"Validation loss decreased ({valid_loss_min:.6f} --> {valid_loss:.6f}). Saving model...")
-                torch.save(model.state_dict(), 'model.pt')
+                torch.save(model.state_dict(), 'final_model.pt')
                 valid_loss_min = valid_loss
                 wait = 0
             # Early stopping

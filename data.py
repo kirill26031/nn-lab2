@@ -91,13 +91,13 @@ class PlantOrgansDataset(Dataset):
         size = self.dataset[index]['image'].size
         if self.common_transform is not None:
             X, y = self.common_transform(X, y)
-            size = (X.size(1), X.size(2))
+            # size = (X.size(1), X.size(2))
             # print(X.shape)
         if self.images_transform is not None:
             X = self.images_transform(X)
         if self.masks_transform is not None:
             y = self.masks_transform(y)
-        return X, y, size
+        return X, y
 
     def __len__(self):
         return self.count
