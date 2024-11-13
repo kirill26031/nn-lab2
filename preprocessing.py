@@ -2,6 +2,7 @@ import os
 from PIL import Image
 import torchvision.transforms as T
 import numpy as np
+from data import DATA_PATH
 
 
 def resize_image_and_mask(image, mask, size=(256, 256)):
@@ -81,10 +82,13 @@ def preprocess_dataset(data_directory):
     return processed_images, processed_masks
 
 
-processed_data = {}
-for split_name, data_directory in DATA_DIRS.items():
-    print(f"Processing {split_name}...")
-    images, masks = preprocess_dataset(data_directory)
-    processed_data[split_name] = {'images': images, 'masks': masks}
+# processed_data = {}
+# for split_name, data_directory in DATA_DIRS.items():
+#     print(f"Processing {split_name}...")
+#     images, masks = preprocess_dataset([
+#         os.path.join(DATA_PATH, data_directory[0].replace('/', '\\')),
+#         os.path.join(DATA_PATH, data_directory[1].replace('/', '\\'))
+#         ])
+#     processed_data[split_name] = {'images': images, 'masks': masks}
 
-print("Preprocessing finished")
+# print("Preprocessing finished")

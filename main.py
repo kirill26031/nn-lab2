@@ -10,7 +10,13 @@ if __name__ == '__main__':
     class_distribution = get_class_distribution()
     get_average_sizes(class_distribution)
     '''
-    class_distribution = {np.uint8(0): np.int64(67720594331), np.uint8(1): np.int64(4390472503), np.uint8(2): np.int64(7192139908), np.uint8(4): np.int64(1775289245), np.uint8(3): np.int64(5756712)}
+    class_distribution = {
+        np.uint8(0): np.int64(67720594331), 
+        np.uint8(1): np.int64(4390472503), 
+        np.uint8(2): np.int64(7192139908), 
+        np.uint8(4): np.int64(1775289245), 
+        np.uint8(3): np.int64(5756712)
+        }
     #plot_class_frequency(class_distribution)
     example_mask = np.array(dataset['train'][0]['label'])
 

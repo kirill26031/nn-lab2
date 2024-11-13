@@ -1,11 +1,13 @@
 from datasets import load_dataset
 import matplotlib.pyplot as plt
 import numpy as np
-import time
 from matplotlib.colors import ListedColormap
 from PIL import Image, ExifTags
+from torch.utils.data.dataset import Dataset
 
-dataset = load_dataset("farmaieu/plantorgans")
+
+DATA_PATH = "C:\\Users\\pc\\Documents\\repos\\mp-2\\nn\\nn-lab2\\data"
+dataset = load_dataset("farmaieu/plantorgans", cache_dir=DATA_PATH)
 
 image = dataset['train'][0]['image']
 mask = dataset['train'][0]['label']
@@ -72,3 +74,31 @@ def show_class(mask, class_index):
     highlighted_image[mask == class_index] = class_index
 
     return highlighted_image
+
+class PlantOrgansDataset(Dataset):
+    def __init__(self, dataset, common_transform=None, images_transform=None, masks_transform=None):
+        # self.X = dataset[tag]['image']
+        # self.y = dataset[tag]['label']
+        self.dataset = dataset
+        self.count = len(dataset)
+        self.common_transform = common_transform
+        self.images_transform = images_transform
+        self.masks_transform = masks_transform
+
+    def __getitem__(self, index):
+        X = self.dataset[index]['image']
+        y = self.dataset[index]['label']
+        size = self.dataset[index]['image'].size
+        if self.common_transform is not None:
+            X, y = self.common_transform(X, y)
+            size = (X.size(1), X.size(2))
+            # print(X.shape)
+        if self.images_transform is not None:
+            X = self.images_transform(X)
+        if self.masks_transform is not None:
+            y = self.masks_transform(y)
+        return X, y, size
+
+    def __len__(self):
+        return self.count
+    
