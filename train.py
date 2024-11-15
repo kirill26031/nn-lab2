@@ -5,12 +5,18 @@ import tqdm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # device = "cpu"
 
-def patch_loss(model, loss_func, X, y: torch.Tensor, optimizer=None):
+def patch_loss(model, loss_func, X, y: torch.Tensor, class_weights: torch.Tensor, optimizer=None):
     predicted = model(X)
-    most_popular_class = torch.mode(y.view(y.size(0), -1), dim=1)
+    y_flattened = y.view(y.size(0), -1) #(batch_size, patch_size*patch_size)
+    class_counts = torch.zeros((len(y), len(class_weights)), device=device)
+    for row, y_row in enumerate(y_flattened):
+       u_values, u_counts = y_row.unique(return_counts=True)
+       for i in range(len(u_values)):
+          class_counts[row][u_values[i]] += u_counts[i]
+    most_popular_class = torch.argmax(dim=1, input=class_counts.mul(class_weights))
     loss_ = loss_func(
        predicted, 
-       most_popular_class.values.type(torch.ByteTensor).to(device)
+       most_popular_class
        )
     if optimizer is not None:
       loss_.backward()
@@ -22,7 +28,7 @@ def patch_loss(model, loss_func, X, y: torch.Tensor, optimizer=None):
 def patch_validate(model, loss_func, X, y):
     predicted = model(X)
     most_popular_class = torch.mode(y.view(y.size(0), -1), dim=1)
-    ground_truth = most_popular_class.values.type(torch.ByteTensor).to(device)
+    ground_truth = most_popular_class.values.type(torch.LongTensor).to(device)
     loss_ = loss_func(
        predicted, 
        ground_truth
@@ -34,21 +40,18 @@ def patch_validate(model, loss_func, X, y):
 def pixel_validate(model, loss_func, X, y: torch.Tensor):
     predicted = model(X)
     most_popular_class = torch.mode(y.view(y.size(0), -1), dim=1)
-    ground_truth = most_popular_class.values.type(torch.ByteTensor).to(device)
+    ground_truth = most_popular_class.values.type(torch.LongTensor).to(device)
     loss_ = loss_func(
        predicted, 
        ground_truth
        )
+    
     pred = torch.argmax(predicted, dim=1)
-    accuracy = 0
-    for i in range(0, len(y)):
-      predicted_class = pred[i]
-      accuracy += torch.divide(
-         torch.sum(torch.where(y[i] == predicted_class, 1, 0)).type(torch.FloatTensor).to(device), 
-         y.size(2) * y.size(3)
-         )
+    correct_pixels = (y.permute(1, 2, 3, 0) == pred).sum().item()
+    total_pixels = y.numel()
+    accuracy = correct_pixels / total_pixels
 
-    return loss_.item(), accuracy, len(X)
+    return loss_.item(), accuracy * len(X), len(X)
 
 def evaluate(model: torch.nn.Module, loss_func, loader):
     model.eval()
@@ -60,7 +63,7 @@ def evaluate(model: torch.nn.Module, loss_func, loader):
         for batch in loader:
           i += 1
           for X, y in batch:
-            validated_batches.append(patch_validate(model, loss_func, X, y))
+            validated_batches.append(pixel_validate(model, loss_func, X, y))
           print("evaluate ", i)
 
         losses, corrects, nums = zip(*validated_batches)
@@ -71,13 +74,13 @@ def evaluate(model: torch.nn.Module, loss_func, loader):
           f"Test accruacy: {test_accuracy:.3f}%")
     return test_loss, test_accuracy
 
-def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patience=10):
+def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, class_weights, patience=3):
     graphic_losses = []
 
     wait = 0
     valid_loss_min = np.Inf
 
-    for epoch in tqdm.tqdm(range(epochs)):
+    for epoch in range(epochs):
 
         model.train()
 
@@ -85,7 +88,8 @@ def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patienc
       
         for batch in tqdm.tqdm(train_loader):
           for X, y in batch:
-            losses.append(patch_loss(model, loss_func, X, y, optimizer))
+            losses.append(patch_loss(model, loss_func, X, y, class_weights, optimizer))
+        # torch.cuda.empty_cache()
 
         losses, nums = zip(*losses)
         train_loss = sum(np.multiply(losses, nums)) / sum(nums)
@@ -98,7 +102,7 @@ def fit(epochs, model, loss_func, optimizer, train_loader, valid_loader, patienc
             for batch in tqdm.tqdm(valid_loader):
               for X, y in batch:
                 losses.append(pixel_validate(model, loss_func, X, y))
-
+            # torch.cuda.empty_cache()
             torch.save(model.state_dict(), 'model.pt')
 
             losses, corrects, nums = zip(*losses)
