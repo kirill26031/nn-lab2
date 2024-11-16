@@ -107,3 +107,9 @@ def get_extractor(device, model, layer_name):
 
 def get_feature(input, model, layer_name):
     return model(input)[layer_name]
+
+def get_model(device):
+    model = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=True).to(device)
+    model.eval()
+    model.requires_grad_(False)
+    return model
