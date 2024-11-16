@@ -2,52 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from torchvision.transforms.v2 import Transform
-
-class AlexNet(nn.Module):
-    def __init__(self, kernel_sizes, conv_sizes, paddings, fc_sizes, stride0=4, image_size=224):
-        super().__init__()
-        self.image_size = image_size
-        self.kernel_sizes = kernel_sizes
-        self.conv_sizes = conv_sizes
-        self.paddings = paddings
-        self.fc_sizes = fc_sizes
-        self.stride0 = stride0
-
-        self.conv1 = nn.Conv2d(3, conv_sizes[0], kernel_sizes[0], stride0, padding=paddings[0])
-        self.conv2 = nn.Conv2d(conv_sizes[0], conv_sizes[1], kernel_sizes[1], padding=paddings[1])
-        self.conv3 = nn.Conv2d(conv_sizes[1], conv_sizes[2], kernel_sizes[2], padding=paddings[2])
-        self.conv4 = nn.Conv2d(conv_sizes[2], conv_sizes[3], kernel_sizes[3], padding=paddings[3])
-        self.conv5 = nn.Conv2d(conv_sizes[3], conv_sizes[4], kernel_sizes[4], padding=paddings[4])
-
-        self.after_conv_size = self.calculate_after_conv_size()
-
-        self.fc1 = nn.Linear(conv_sizes[4] * self.after_conv_size * self.after_conv_size, fc_sizes[0])
-        self.fc2 = nn.Linear(fc_sizes[0], fc_sizes[1])
-        self.fc3 = nn.Linear(fc_sizes[1], 4)
-
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, 2)
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, 2)
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
-        x = F.relu(self.conv5(x))
-        x = F.max_pool2d(x, 2)
-        x = x.view(-1, self.conv_sizes[4] * self.after_conv_size * self.after_conv_size)
-        x = F.dropout(x, 0.5)
-        x = F.relu(self.fc1(x))
-        x = F.dropout(x, 0.5)
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-    
-    def calculate_after_conv_size(self):
-        after_conv1 = int((self.image_size - self.kernel_sizes[0] + self.paddings[0] + self.stride0 - 2) // self.stride0) // 2
-        after_conv2 = (after_conv1 - self.kernel_sizes[1] + self.paddings[1] + 1 - 2) // 2
-        after_conv4 = after_conv2 - self.kernel_sizes[2] - self.kernel_sizes[3] + self.paddings[2] + self.paddings[3] + 2
-        after_conv5 = (after_conv4 - self.kernel_sizes[4] + self.paddings[4] + 1 - 2) // 2
-        return int(after_conv5)
+from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
 
 def image_to_patches(image: torch.Tensor, patch_size=32):
     if image.dim() == 3:
@@ -68,6 +23,23 @@ def image_to_patches(image: torch.Tensor, patch_size=32):
     patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
     patches = patches.view(-1, image_padded.size(1), patch_size, patch_size)
     
+    return patches
+
+def sliding_window_patches(image: torch.Tensor, kernel_size, stride=1):
+    _, _, H, W = image.shape
+    first_pad = kernel_size // 2
+    second_pad = first_pad
+    if kernel_size % 2 == 0:
+        second_pad = first_pad - 1
+
+    padding = (first_pad, second_pad, first_pad, second_pad)
+    img_padded = torch.nn.functional.pad(image, padding, mode='replicate')
+    # Use unfold to extract patches
+    patches = img_padded.unfold(2, kernel_size, stride).unfold(3, kernel_size, stride)
+
+    # Reshape to get a tensor of shape (N, C, patch_size, patch_size)
+    patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+    patches = patches.view(patches.size(1), patches.size(2), img_padded.size(1), kernel_size, kernel_size)
     return patches
 
 def patch_index_to_position(image_width: int, image_height: int, index: int, patch_size=32):
@@ -91,6 +63,47 @@ class MyTransform(Transform):
 
         if other is None or len(other) == 0:
             return patches
-        # print(other)
+        
         other_pathes = image_to_patches(other[0], self.patch_size)
         return patches, other_pathes
+    
+class SlidingWindow(Transform):
+    def __init__(self, patch_size=32, stride=1):
+        super().__init__()
+        self.patch_size = patch_size
+        self.stride = stride
+
+    def __call__(self, input, **other):
+        patches = sliding_window_patches(input, self.patch_size, self.stride)
+
+        if other is None or len(other) == 0:
+            return patches
+        
+        other_pathes = sliding_window_patches(other[0], self.patch_size, self.stride)
+        return patches, other_pathes
+    
+class ExtractFeatures(Transform):
+    def __init__(self, extractor):
+        super().__init__()
+        self.extractor = extractor
+
+    def __call__(self, input, **other):
+        features = get_feature(input, self.extractor)
+
+        if other is None or len(other) == 0:
+            return features
+        
+        other_features = get_feature(other[0], self.extractor)
+        return features, other_features
+    
+def get_extractor(device, model, layer_name):
+    return_nodes = {
+        layer_name: layer_name
+    }
+    extractor = create_feature_extractor(model, return_nodes=return_nodes).to(device)
+    extractor.eval()
+    extractor.requires_grad_(False)
+    return extractor
+
+def get_feature(input, model, layer_name):
+    return model(input)[layer_name]
