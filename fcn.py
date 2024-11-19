@@ -17,7 +17,7 @@ class FCN (nn.Module):
                 base_model.layer1, base_model.layer2, base_model.layer3, base_model.layer4
             )
             encoder_channels = [64, 256, 512, 1024, 2048]
-            if backbone == 'vgg':
+        elif backbone == 'vgg':
                 base_model = models.vgg16(weights=VGG16_Weights.DEFAULT)
                 self.encoder_layers = base_model.features
                 encoder_channels = [64, 128, 256, 512, 512]
