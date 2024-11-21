@@ -7,7 +7,6 @@ from PIL import Image
 import numpy as np
 import optuna
 import csv
-from train_fcn import calculate_iou, calculate_dice
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -50,16 +49,63 @@ class MaskRCNNDataset(torch.utils.data.Dataset):
         else:
             masks = mask == obj_ids[:, None, None]
             boxes = []
+            valid_obj_ids = []
             for i in range(len(obj_ids)):
                 pos = torch.nonzero(masks[i], as_tuple=True)
                 xmin, xmax = torch.min(pos[1]), torch.max(pos[1])
                 ymin, ymax = torch.min(pos[0]), torch.max(pos[0])
-                boxes.append([xmin.item(), ymin.item(), xmax.item(), ymax.item()])
-            boxes = torch.tensor(boxes, dtype=torch.float32)
-            labels = torch.ones((len(obj_ids),), dtype=torch.int64)
+                if xmax > xmin and ymax > ymin:
+                    boxes.append([xmin.item(), ymin.item(), xmax.item(), ymax.item()])
+                    valid_obj_ids.append(obj_ids[i])
+            if len(boxes) == 0:
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+                masks = torch.zeros((0, mask.shape[0], mask.shape[1]), dtype=torch.uint8)
+                labels = torch.zeros((0,), dtype=torch.int64)
+            else:
+                boxes = torch.tensor(boxes, dtype=torch.float32)
+                masks = mask == torch.tensor(valid_obj_ids, dtype=torch.uint8)[:, None, None]
+                labels = torch.ones((len(valid_obj_ids),), dtype=torch.int64)
 
         target = {"boxes": boxes, "labels": labels, "masks": masks}
         return image, target
+
+
+def calculate_iou(pred, target, num_classes):
+    ious = []
+    pred = torch.argmax(pred, dim=1).to(device)
+    target = target.to(device)
+    for cls in range(num_classes):
+        pred_cls = pred == cls
+        target_cls = target == cls
+
+        intersection = (pred_cls & target_cls).sum().item()
+        union = (pred_cls | target_cls).sum().item()
+
+        if union == 0:
+            ious.append(float('nan'))
+        else:
+            ious.append(intersection / union)
+
+    return ious
+
+
+def calculate_dice(pred, target, num_classes):
+    dices = []
+    pred = torch.argmax(pred, dim=1).to(device)
+    target = target.to(device)
+    for cls in range(num_classes):
+        pred_cls = pred == cls
+        target_cls = target == cls
+
+        intersection = (pred_cls & target_cls).sum().item()
+        total = pred_cls.sum().item() + target_cls.sum().item()
+
+        if total == 0:
+            dices.append(float('nan'))
+        else:
+            dices.append(2 * intersection / total)
+
+    return dices
 
 
 def get_dataloaders(data_dirs, batch_size):
@@ -87,7 +133,7 @@ def train_model(model, train_loader, optimizer, device):
 
 
 def validate_model_with_metrics(model, val_loader, device, num_classes):
-    model.train()
+    model.eval()
     total_loss = 0
     all_ious, all_dices = [], []
 
@@ -129,7 +175,7 @@ def objective(trial):
     anchor_sizes_options = [(32, 64, 128), (64, 128, 256)]
     anchor_sizes_idx = trial.suggest_int("anchor_sizes_idx", 0, len(anchor_sizes_options) - 1)
     anchor_sizes = anchor_sizes_options[anchor_sizes_idx]
-    num_proposals = trial.suggest_int("num_proposals", 100, 500, step=100)
+    num_proposals = trial.suggest_int("num_proposals", 100, 300, step=100)
 
     print(f"\nStarting training with parameters:")
     print(f"Learning Rate: {lr}")
@@ -161,10 +207,10 @@ def objective(trial):
         val_loss = validate_model_with_metrics(model, val_loader, device, num_classes)
         print(f"Epoch {epoch + 1}/{epochs} (Fine-Tuning), Train Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
 
-    return val_loss
+    _, mean_iou, mean_dice = validate_model_with_metrics(model, val_loader, device, num_classes)
+    return 1 - mean_dice
 
-
-def run_optuna(n_trials=10):
+def run_optuna(n_trials=5):
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=n_trials)
 
@@ -181,4 +227,4 @@ def save_results_to_csv(results, filename="optuna_results.csv"):
         writer.writerows(results)
 
 
-study = run_optuna(n_trials=10)
+study = run_optuna(n_trials=5)
