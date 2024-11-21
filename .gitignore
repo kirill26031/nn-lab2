@@ -3,3 +3,7 @@ raytune/
 __pycache__/
 *.pt
 features/
+.ipynb_checkpoints/*
+.virtual_documents/*
+*copy.ipynb
+umap_model*.*

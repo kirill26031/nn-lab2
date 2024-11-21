@@ -6,26 +6,31 @@ import torch
 def random_sample(tensor, k):
     return tensor[torch.randperm(len(tensor))[:k]].detach().clone()
 
-def distance_matrix(x, y=None, p = 2): #pairwise distance of vectors
+def distance_matrix(x, y=None, p = 2, save_memory=True): #pairwise distance of vectors
     
     y = x if type(y) == type(None) else y
 
     n = x.size(0)
     m = y.size(0)
     
-    dist = torch.empty(n, m, device=x.device)  # Allocate memory for result
-
-    # Compute distances in a memory-efficient way
-    for i in range(m):  # Loop over y vectors
-        diff = torch.sub(x, y[i])   # Broadcast only over x, avoiding full tensor expansion
-        dist[:, i] = torch.linalg.vector_norm(diff, p, dim=1) if torch.__version__ >= '1.7.0' else torch.pow(diff, p).sum(1).pow(1/p)
-
+    if save_memory:
+        dist = torch.empty(n, m, device=x.device)  # Allocate memory for result
+        # Compute distances in a memory-efficient way
+        for i in range(m):  # Loop over y vectors
+            diff = torch.sub(x, y[i])   # Broadcast only over x, avoiding full tensor expansion
+            dist[:, i] = torch.linalg.vector_norm(diff, p, dim=1) if torch.__version__ >= '1.7.0' else torch.pow(diff, p).sum(1).pow(1/p)
+    else:
+        d = x.size(1)
+        x = x.unsqueeze(1).expand(n, m, d)
+        y = y.unsqueeze(0).expand(n, m, d)
+        dist = torch.linalg.vector_norm(x - y, p, 2) if torch.__version__ >= '1.7.0' else torch.pow(x - y, p).sum(2).pow(1/p)
     return dist
 
 class NN():
 
-    def __init__(self, X = None, Y = None, p = 2):
+    def __init__(self, X = None, Y = None, p = 2, save_memory=True):
         self.p = p
+        self.save_memory = save_memory 
         self.train(X, Y)
 
     def train(self, X, Y):
@@ -40,7 +45,7 @@ class NN():
             name = self.__class__.__name__
             raise RuntimeError(f"{name} wasn't trained. Need to execute {name}.train() first")
         
-        dist = distance_matrix(x, self.train_pts, self.p)
+        dist = distance_matrix(x, self.train_pts, self.p, self.save_memory)
         labels = torch.argmin(dist, dim=1)
         return self.train_label[labels]
 
@@ -72,9 +77,9 @@ class KMeans(NN):
 
 class KNN(NN):
 
-    def __init__(self, X = None, Y = None, k = 3, p = 2):
+    def __init__(self, X = None, Y = None, k = 3, p = 2, save_memory=True):
         self.k = k
-        super().__init__(X, Y, p)
+        super().__init__(X, Y, p, save_memory)
     
     def train(self, X, Y):
         super().train(X, Y)
@@ -86,7 +91,7 @@ class KNN(NN):
             name = self.__class__.__name__
             raise RuntimeError(f"{name} wasn't trained. Need to execute {name}.train() first")
         
-        dist = distance_matrix(x, self.train_pts, self.p)
+        dist = distance_matrix(x, self.train_pts, self.p, self.save_memory)
 
         knn = dist.topk(self.k, largest=False)
         votes = self.train_label[knn.indices]
