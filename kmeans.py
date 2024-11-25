@@ -19,6 +19,7 @@ def distance_matrix(x, y=None, p = 2, save_memory=True): #pairwise distance of v
         for i in range(m):  # Loop over y vectors
             diff = torch.sub(x, y[i])   # Broadcast only over x, avoiding full tensor expansion
             dist[:, i] = torch.linalg.vector_norm(diff, p, dim=1) if torch.__version__ >= '1.7.0' else torch.pow(diff, p).sum(1).pow(1/p)
+            torch.cuda.empty_cache()
     else:
         d = x.size(1)
         x = x.unsqueeze(1).expand(n, m, d)
@@ -85,6 +86,8 @@ class KNN(NN):
         super().train(X, Y)
         if type(Y) != type(None):
             self.unique_labels = self.train_label.unique()
+            if len(X) != len(Y):
+                raise RuntimeError("Mismatch in input sizes: X={x_shape} Y={y_shape}".format(x_shape=X.shape, y_shape=Y.shape))
 
     def predict(self, x):
         if type(self.train_pts) == type(None) or type(self.train_label) == type(None):
@@ -92,6 +95,7 @@ class KNN(NN):
             raise RuntimeError(f"{name} wasn't trained. Need to execute {name}.train() first")
         
         dist = distance_matrix(x, self.train_pts, self.p, self.save_memory)
+        torch.cuda.empty_cache()
 
         knn = dist.topk(self.k, largest=False)
         votes = self.train_label[knn.indices]

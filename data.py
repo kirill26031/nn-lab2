@@ -6,7 +6,7 @@ from PIL import Image, ExifTags
 from torch.utils.data.dataset import Dataset
 
 
-DATA_PATH = "f:\\d\\nlp"
+DATA_PATH = "C:\\Users\\pc\\Documents\\repos\\mp-2\\nn\\nn-lab2\\data"
 dataset = load_dataset("farmaieu/plantorgans", cache_dir=DATA_PATH, verification_mode="no_checks")
 
 image = dataset['train'][0]['image']

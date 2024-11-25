@@ -27,6 +27,6 @@ def calculate_metrics(device, ground_truth_mask, predicted_class):
     meanIoU_result = meanIoU(predicted_mask, ground_truth)
     return {
         "accuracy": acc.item(),
-        "meanIoU": meanIoU_result.item()
+        "meanIoU": meanIoU_result.to("cpu")
     }
 

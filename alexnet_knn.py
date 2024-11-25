@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 import torch.utils.data as data_utils
 from kmeans import KMeans
 import tqdm
+from transforms import mask_of_uniform_size
 
 
 def retrieve_features(input, layer_name="classifier.0", sliding_window_size=32, 
@@ -69,24 +70,12 @@ import pickle
 import os
 import lz4
 
-def save_features(index, features, src_path, layer_name="classifier.0", sliding_window_size=32, 
-                         sliding_window_step=11, name='train'):
-    file_name = os.path.join(src_path, "features", 
-                            "{name}_{layer_name}_{window_size}_{window_step}_{i}.lz4"
-                              .format(name=name, layer_name=layer_name, window_size=sliding_window_size, 
-                                      window_step=sliding_window_step, i=index)
-                            )
+def save_features(features, file_name):
     with lz4.frame.open(file_name, mode="wb") as f:
       pickle.dump(features.shape , f) 
       pickle.dump(features, f)
 
-def read_features(index, src_path, layer_name="classifier.0", sliding_window_size=32, 
-                         sliding_window_step=11, name="train"):
-    file_name = os.path.join(src_path, "features", 
-                            "{name}_{layer_name}_{window_size}_{window_step}_{i}.lz4"
-                              .format(layer_name=layer_name, window_size=sliding_window_size, 
-                                      window_step=sliding_window_step, i=index, name=name)
-                            )
+def read_features(index, src_path, file_name):
     with lz4.frame.open(file_name, mode="rb") as f:
       features_shape = pickle.load(f)
       features = pickle.load(f)
@@ -105,3 +94,22 @@ def load_and_merge_knn_features(device, src_path, reducer=None, indices = range(
 
     return torch.cat(knn_features, dim=0).to(device)
 
+def get_feature_filename(index, src_path, layer_name="classifier.0", sliding_window_size=32, 
+                         sliding_window_step=11, name='train', resize_size=2048):
+    return os.path.join(src_path, "features", 
+                            "{name}_{layer_name}_{window_size}_{window_step}_{resize_size}_{i}.lz4"
+                              .format(name=name, layer_name=layer_name, window_size=sliding_window_size, 
+                                      window_step=sliding_window_step, i=index, resize_size=resize_size)
+                            )
+
+def get_ground_truth_for_indices(indices, dataset):
+    ground_truths = []
+    for i in indices:
+        ground_truth = mask_of_uniform_size(dataset[i]).to("cpu")
+        mask_patches = SlidingWindow(32, 11)(ground_truth.unsqueeze(0))
+        mask_patches_ = mask_patches.view(mask_patches.size(0), mask_patches.size(1), -1)
+        ground_truths.append(torch.mode(mask_patches_, dim=2).values.to(dtype=torch.int8).view(-1))
+        del ground_truth, mask_patches, mask_patches_
+    merged_ground_truths = torch.cat(ground_truths, dim=0).to(device)
+    del ground_truths
+    return merged_ground_truths
