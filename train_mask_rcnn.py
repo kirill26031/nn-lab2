@@ -1,12 +1,12 @@
 import os
 import torch
 from torch.utils.data import DataLoader
-from mask_rcnn import create_mask_rcnn
+from torchvision.models.detection import maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights
 from torchvision.transforms import functional as F
 from PIL import Image
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 import numpy as np
-import optuna
-import csv
+from torch.utils.data import Dataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -16,18 +16,20 @@ DATA_DIRS = {
 }
 
 batch_size = 4
-epochs = 10
+epochs = 5
 num_classes = 5
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class MaskRCNNDataset(torch.utils.data.Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None):
+# Dataset definition
+class MaskRCNNDataset(Dataset):
+    def __init__(self, image_dir, mask_dir, transform=None, resize=(256, 256)):  # resizing
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.image_filenames = sorted(os.listdir(image_dir))
         self.mask_filenames = sorted(os.listdir(mask_dir))
         self.transform = transform
+        self.resize = resize
 
     def __len__(self):
         return len(self.image_filenames)
@@ -38,11 +40,19 @@ class MaskRCNNDataset(torch.utils.data.Dataset):
 
         image = Image.open(image_path).convert("RGB")
         mask = Image.open(mask_path)
+
+        # Resize
+        image = image.resize(self.resize, Image.Resampling.BILINEAR)
+        mask = mask.resize(self.resize, Image.Resampling.NEAREST)
+
+        image = np.array(image)
+        mask = np.array(mask)
+
         image = torch.tensor(np.array(image) / 255.0, dtype=torch.float32).permute(2, 0, 1)
         mask = torch.tensor(np.array(mask), dtype=torch.uint8)
 
-        obj_ids = torch.unique(mask)[1:]  # Видаляємо фон
-        if len(obj_ids) == 0:  # Якщо немає об'єктів
+        obj_ids = torch.unique(mask)[1:]  # Remove the background
+        if len(obj_ids) == 0:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             masks = torch.zeros((0, mask.shape[0], mask.shape[1]), dtype=torch.uint8)
             labels = torch.zeros((0,), dtype=torch.int64)
@@ -70,6 +80,58 @@ class MaskRCNNDataset(torch.utils.data.Dataset):
         return image, target
 
 
+def collate_fn(batch):
+    return tuple(zip(*batch))
+
+
+def get_dataloaders(data_dirs, batch_size):
+    dataloaders = {}
+    for split, (image_dir, mask_dir) in data_dirs.items():
+        dataset = MaskRCNNDataset(image_dir, mask_dir)
+        dataloaders[split] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=(split == 'train'),
+            collate_fn=collate_fn,
+            pin_memory=True,  # pinned memory
+            num_workers=2,
+            persistent_workers=True,
+        )
+    return dataloaders
+
+
+# TorchScript
+def get_model(num_classes):
+    weights = MaskRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = maskrcnn_resnet50_fpn(weights=weights)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    model = torch.jit.script(model)
+    return model.to(device)
+
+
+# Train
+def train_model(model, train_loader, optimizer, device):
+    model.train()
+    total_loss = 0
+    for images, targets in train_loader:
+        images = [img.to(device) for img in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        optimizer.zero_grad()
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        losses.backward()
+        optimizer.step()
+
+        total_loss += losses.item()
+
+    avg_loss = total_loss / len(train_loader)
+    print(f"Training completed - Average Loss: {avg_loss:.4f}")
+    return avg_loss
+
+
+# IoU
 def calculate_iou(pred, target, num_classes):
     ious = []
     pred = torch.argmax(pred, dim=1).to(device)
@@ -89,6 +151,7 @@ def calculate_iou(pred, target, num_classes):
     return ious
 
 
+# Dice
 def calculate_dice(pred, target, num_classes):
     dices = []
     pred = torch.argmax(pred, dim=1).to(device)
@@ -108,33 +171,9 @@ def calculate_dice(pred, target, num_classes):
     return dices
 
 
-def get_dataloaders(data_dirs, batch_size):
-    dataloaders = {}
-    for split, (image_dir, mask_dir) in data_dirs.items():
-        dataset = MaskRCNNDataset(image_dir, mask_dir)
-        dataloaders[split] = DataLoader(dataset, batch_size=batch_size, shuffle=(split == 'train'),
-                                        collate_fn=lambda x: tuple(zip(*x)))
-    return dataloaders
-
-
-def train_model(model, train_loader, optimizer, device):
-    model.train()
-    total_loss = 0
-    for images, targets in train_loader:
-        images = [img.to(device) for img in images]
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
-        optimizer.zero_grad()
-        losses.backward()
-        optimizer.step()
-        total_loss += losses.item()
-    return total_loss / len(train_loader)
-
-
-def validate_model_with_metrics(model, val_loader, device, num_classes):
+# Validate with metrics
+def validate_model(model, val_loader, device, num_classes):
     model.eval()
-    total_loss = 0
     all_ious, all_dices = [], []
 
     with torch.no_grad():
@@ -142,89 +181,71 @@ def validate_model_with_metrics(model, val_loader, device, num_classes):
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            total_loss += losses.item()
-
-            model.eval()
             outputs = model(images)
-            model.train()
 
             for output, target in zip(outputs, targets):
-                pred_masks = (output['masks'] > 0.5).squeeze(1)
+                pred_masks = output['masks'].squeeze(1)
                 true_masks = target['masks']
 
-                # IoU and Dice
+                # IoU
                 ious = calculate_iou(pred_masks, true_masks, num_classes)
+
+                # Dice
                 dices = calculate_dice(pred_masks, true_masks, num_classes)
 
                 all_ious.extend(ious)
                 all_dices.extend(dices)
 
+    # mean IoU, Dice
     mean_iou = torch.tensor(all_ious).nanmean().item()
     mean_dice = torch.tensor(all_dices).nanmean().item()
-    avg_loss = total_loss / len(val_loader)
 
-    print(f"Validation - Loss: {avg_loss:.4f}, Mean IoU: {mean_iou:.4f}, Mean Dice: {mean_dice:.4f}")
-    return avg_loss, mean_iou, mean_dice
+    return mean_iou, mean_dice
 
-
-def objective(trial):
-    # Parameters
-    lr = trial.suggest_float("learning_rate", 1e-4, 1e-3, log=True)
-    anchor_sizes_options = [(32, 64, 128), (64, 128, 256)]
-    anchor_sizes_idx = trial.suggest_int("anchor_sizes_idx", 0, len(anchor_sizes_options) - 1)
-    anchor_sizes = anchor_sizes_options[anchor_sizes_idx]
-    num_proposals = trial.suggest_int("num_proposals", 100, 300, step=100)
-
-    print(f"\nStarting training with parameters:")
-    print(f"Learning Rate: {lr}")
-    print(f"Anchor Sizes: {anchor_sizes}")
-    print(f"Number of Proposals: {num_proposals}\n")
+if __name__ == '__main__':
 
     dataloaders = get_dataloaders(DATA_DIRS, batch_size=batch_size)
     train_loader = dataloaders['train']
     val_loader = dataloaders['validation']
 
-    model = create_mask_rcnn(num_classes=num_classes, anchor_sizes=anchor_sizes, num_proposals=num_proposals).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    weights = MaskRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = maskrcnn_resnet50_fpn(weights=weights, num_classes=91)
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    hidden_layer = 256
+    model.roi_heads.mask_predictor = torch.nn.Sequential(
+        torch.nn.Conv2d(in_features_mask, hidden_layer, kernel_size=3, stride=1, padding=1),
+        torch.nn.ReLU(),
+        torch.nn.Conv2d(hidden_layer, num_classes, kernel_size=1)
+    )
 
-    # Frozen backbone
-    for param in model.backbone.parameters():
-        param.requires_grad = False
+    model.to(device)
 
-    for epoch in range(5):
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
+
+    # Train and validate
+    for epoch in range(epochs):
+        print(f"Epoch {epoch + 1}/{epochs}")
         train_loss = train_model(model, train_loader, optimizer, device)
-        val_loss = validate_model_with_metrics(model, val_loader, device, num_classes)
-        print(f"Epoch {epoch + 1}/5 (Frozen Backbone), Train Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
-
-    # Fine-tuning
-    for param in model.backbone.parameters():
-        param.requires_grad = True
-
-    for epoch in range(5, epochs):
-        train_loss = train_model(model, train_loader, optimizer, device)
-        val_loss = validate_model_with_metrics(model, val_loader, device, num_classes)
-        print(f"Epoch {epoch + 1}/{epochs} (Fine-Tuning), Train Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
-
-    _, mean_iou, mean_dice = validate_model_with_metrics(model, val_loader, device, num_classes)
-    return 1 - mean_dice
-
-def run_optuna(n_trials=5):
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials)
-
-    print("Best parameters:", study.best_params)
-    print("Best validation loss:", study.best_value)
-    return study
+        #mean_iou, mean_dice = validate_model(model, val_loader, device, num_classes)
+        print(
+            f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.4f}")
 
 
-def save_results_to_csv(results, filename="optuna_results.csv"):
-    keys = results[0].keys()
-    with open(filename, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        writer.writerows(results)
+'''
+dataloaders = get_dataloaders(DATA_DIRS, batch_size)
+train_loader = dataloaders['train']
+val_loader = dataloaders['validation']
 
+model = get_model(num_classes)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-study = run_optuna(n_trials=5)
+for epoch in range(epochs):
+    print(f"Epoch {epoch + 1}/{epochs}")
+
+    # Train phase
+    train_model(model, train_loader, optimizer)
+
+    # Validation phase
+    mean_iou, mean_dice = validate_model(model, val_loader, device, num_classes)
+    print(f"Epoch {epoch + 1}/{epochs} - Mean IoU: {mean_iou:.4f}, Mean Dice: {mean_dice:.4f}")
+'''
